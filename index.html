@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>!!! CAUTION !!!</title>
+    <link rel="icon" href="favicon.ico" type="image/x-icon">
+    <style>
+        body {
+            margin: 0px;
+            padding: 0px;
+            font-family: Arial, Helvetica, sans-serif;
+            background-color: rgb(75, 75, 75);
+            color: rgb(230, 230, 230);
+        }
+
+        header {
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        #body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 1em;
+            flex-direction: column;
+        }
+
+        #dropzone {
+            width: 100%;
+            height: 15vh;
+            border: 2px dashed rgb(230, 230, 230);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 1em;
+            cursor: pointer;
+        }
+
+        #fileUpload {
+            display: none;
+        }
+
+        .inputFieldContainer {
+            margin-top: 1em;
+            margin-bottom: 1em;
+        }
+
+        .inputField {
+            padding: 1em;
+            min-width: 20em;
+        }
+
+        .btn {
+            border: none;
+            font-size: 1em;
+            padding: 0.5em;
+            margin: 0.5em;
+            background-color: rgb(85, 85, 255);
+            color: rgb(230, 230, 230);
+            border-radius: 0.25em;
+            cursor: pointer;
+        }
+
+        .editorContainer {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            margin-top: 1.5em;
+            margin-bottom: 1.5em;
+        }
+
+        .editorBtnContainer {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        textarea {
+            background-color: rgb(20, 20, 20);
+            color: rgb(240, 240, 240);
+        }
+
+        #passwordModal {
+            display: none;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            position: fixed;
+            z-index: 1;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgb(0, 0, 0);
+            background-color: rgba(0, 0, 0, 0.6);
+        }
+
+        #toastMessage {
+            display: none;
+            position: fixed;
+            z-index: 1;
+            top: 0;
+            right: 0;
+            padding: 1em;
+            margin: 1em;
+            background-color: #730000;
+        }
+
+        #toastMessageText {
+            margin: 0;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="root">
+        <header>
+            <h1>!!! CAUTION !!!</h1>
+        </header>
+        <div id="body">
+            <div id="dropzone">
+                <input type="file" id="fileUpload" accept=".json, .bin" />
+                <p id="dropzoneHelperText">Drop your file here</p>
+            </div>
+            <div id="inputJsonContainer">
+                <div class="editorContainer">
+                    <div class="editorBtnContainer">
+                        <button class="btn" id="beautifyBtn">Beautify</button>
+                        <button class="btn" id="minifyBtn">Minify</button>
+                        <button class="btn" id="downloadBtn">Download</button>
+                        <button class="btn" id="refreshBtn">Refresh</button>
+                        <button class="btn" id="decryptBtn">Decrypt file</button>
+                    </div>
+                    <textarea id="inputJson" rows="30" cols="50"></textarea>
+                </div>
+            </div>
+            <div id="passwordModal">
+                <div class="inputFieldContainer">
+                    <input type="password" class="inputField" id="password" placeholder="Enter password" />
+                </div>
+                <div class="inputFieldContainer">
+                    <input type="text" class="inputField" id="salt" placeholder="Enter salt" />
+                </div>
+                <div class="btnContainer">
+                    <button id="okBtn" class="btn">
+                        Ok
+                    </button>
+                    <button id="cancelBtn" class="btn">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+        <div id="toastMessage">
+            <p id="toastMessageText"></p>
+        </div>
+    </div>
+    <script>
+        // ------------------- helper functions ---------------- // 
+        const readFile = async (file) => {
+            try {
+                const reader = new FileReader();
+                return new Promise((resolve, reject) => {
+                    reader.onerror = () => {
+                        reader.abort();
+                        reject(new DOMException("Problem parsing input file."));
+                    };
+                    reader.onload = () => {
+                        resolve(reader.result);
+                    };
+                    reader.readAsText(file);
+                });
+            } catch (e) { showToastMessage('readFile - ', e); }
+        }
+        // AES encryption and decryption
+        const deriveKey = async (password, salt) => {
+            try {
+                const encoder = new TextEncoder();
+                const baseKey = await window.crypto.subtle.importKey(
+                    "raw",
+                    encoder.encode(password),
+                    { name: 'PBKDF2' },
+                    false,
+                    ['deriveKey']
+                );
+                const derivedKey = await window.crypto.subtle.deriveKey(
+                    {
+                        name: 'PBKDF2',
+                        salt: encoder.encode(salt),
+                        iterations: 100000,
+                        hash: 'SHA-256'
+                    },
+                    baseKey,
+                    { name: 'AES-GCM', length: 256 },
+                    true,
+                    ['encrypt', 'decrypt']
+                );
+                return derivedKey;
+            } catch (e) { showToastMessage('deriveKey - ', e); }
+        };
+        const encrypt = async (data, password, salt) => {
+            try {
+                const encoder = new TextEncoder();
+                const iv = window.crypto.getRandomValues(new Uint8Array(12));
+                const derivedKey = await deriveKey(password, salt);
+                const encryptedData = await window.crypto.subtle.encrypt(
+                    {
+                        name: 'AES-GCM',
+                        iv: iv
+                    },
+                    derivedKey,
+                    encoder.encode(data)
+                );
+                return {
+                    iv,
+                    encryptedData
+                };
+            } catch (e) { showToastMessage('encrypt - ', e); }
+        };
+        const decrypt = async (data, password, salt) => {
+            try {
+                const decoder = new TextDecoder();
+                const iv = data.iv;
+                const encryptedData = data.encryptedData;
+                const derivedKey = await deriveKey(password, salt);
+                const decryptedData = await window.crypto.subtle.decrypt(
+                    {
+                        name: 'AES-GCM',
+                        iv: iv
+                    },
+                    derivedKey,
+                    encryptedData
+                );
+                return decoder.decode(decryptedData);
+            } catch (e) { showToastMessage('decrypt - ' + e); }
+        };
+        // -------------------------------------------------------------------------- //
+        // --------------------------- variables and elements ---------------------------- //
+        // dropzone elements
+        const dropzone = document.getElementById('dropzone');
+        const dropzoneHelperText = document.getElementById('dropzoneHelperText');
+        const fileUpload = document.getElementById('fileUpload');
+        // json editor elements
+        const beautifyBtn = document.getElementById('beautifyBtn');
+        const minifyBtn = document.getElementById('minifyBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const refreshBtn = document.getElementById('refreshBtn');
+        const decryptBtn = document.getElementById('decryptBtn');
+        const inputJson = document.getElementById('inputJson');
+        // salt password modal elements
+        const passwordModal = document.getElementById('passwordModal');
+        const password = document.getElementById('password');
+        const salt = document.getElementById('salt');
+        const okBtn = document.getElementById('okBtn');
+        const cancelBtn = document.getElementById('cancelBtn');
+        // toast message elements
+        const toastMessage = document.getElementById('toastMessage');
+        const toastMessageText = document.getElementById('toastMessageText');
+        let jsonFileData = {};
+        let isDownload = false;
+        let decryptedFile = null;
+        let decryptedData = '';
+        // ----------------------- file drop ------------------------ //
+        const handleFileDrop = async (files) => {
+            if (files.length > 1) {
+                dropzoneHelperText.innerHTML = 'Only one file allowed';
+                dropzoneHelperText.style.color = 'red';
+                return;
+            }
+            const file = files[0];
+            if (file) {
+                dropzoneHelperText.innerHTML = file.name + ' file loaded';
+                dropzoneHelperText.style.color = 'rgb(230, 230, 230)';
+                const data = await readFile(file);
+                if (file.name.includes('.bin')) {
+                    decryptedFile = file;
+                    passwordModal.style.display = 'flex';
+                    return;
+                }
+                try {
+                    jsonFileData = JSON.parse(data);
+                    inputJson.value = JSON.stringify(jsonFileData, null, 4);
+                } catch (e) {
+                    dropzoneHelperText.innerHTML = 'Invalid JSON file';
+                    dropzoneHelperText.style.color = 'red';
+                    return;
+                }
+            }
+        }
+        // file drop selectors and events
+        dropzone.addEventListener('click', () => {
+            fileUpload.click();
+        });
+        dropzone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropzone.style.backgroundColor = 'rgb(100, 100, 100)';
+        });
+        dropzone.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            dropzone.style.backgroundColor = 'rgb(75, 75, 75)';
+        });
+        dropzone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropzone.style.backgroundColor = 'rgb(75, 75, 75)';
+            handleFileDrop(e.dataTransfer.files);
+
+        });
+        fileUpload.addEventListener('change', () => {
+            handleFileDrop(fileUpload.files);
+        });
+        inputJson.addEventListener('change', () => {
+            jsonFileData = JSON.parse(inputJson.value);
+        });
+        // beautify
+        beautifyBtn.addEventListener('click', () => {
+            inputJson.value = JSON.stringify(jsonFileData, null, 4);
+        });
+        // minify
+        minifyBtn.addEventListener('click', () => {
+            inputJson.value = JSON.stringify(jsonFileData);
+        });
+        // download encrypted file
+        downloadBtn.addEventListener('click', async () => {
+            isDownload = true;
+            passwordModal.style.display = 'flex';
+        });
+        // refresh
+        refreshBtn.addEventListener('click', () => {
+            window.location.reload();
+        });
+        // decrypt file
+        decryptBtn.addEventListener('click', () => {
+            passwordModal.style.display = 'flex';
+        });
+        // ----------------------------------------------------------------------------------------------------------- //
+        // ---------------------------------- encrypt and decrypt events and modal events --------------------------- //
+        cancelBtn.addEventListener('click', () => {
+            password.value = '';
+            salt.value = '';
+            passwordModal.style.display = 'none';
+        });
+        okBtn.addEventListener('click', async () => {
+            let pass = password.value;
+            let sal = salt.value;
+            if (password.value === '' || salt.value === '') {
+                showToastMessage('Password and salt are required');
+                return;
+            }
+            if (isDownload) {
+                const encryptedData = await encrypt(inputJson.value, pass, sal);
+                pass = '', sal = '';
+                console.log(await decrypt(encryptedData, password.value, salt.value));
+                const blob = new Blob([new Uint8Array(encryptedData.iv).buffer, new Uint8Array(encryptedData.encryptedData).buffer], { type: 'application/octet-stream' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'encrypted.bin';
+                a.click();
+                URL.revokeObjectURL(url);
+                isDownload = false;
+            } else {
+                try {
+                    const reader = new FileReader();
+                    reader.onload = async function (event) {
+                        const buffer = event.target.result;
+                        const iv = new Uint8Array(buffer, 0, 12);
+                        const encryptedData = new Uint8Array(buffer, 12);
+                        const decrypted = await decrypt({ iv, encryptedData }, pass, sal);
+                        pass = '', sal = '';
+                        jsonFileData = JSON.parse(decrypted);
+                        inputJson.value = JSON.stringify(jsonFileData, null, 4);
+                    };
+                    reader.readAsArrayBuffer(decryptedFile);
+                } catch (e) {
+                    showToastMessage('decryption - ' + e);
+                    pass = '', sal = '';
+                }
+                decryptedFile = null;
+            }
+            password.value = '';
+            salt.value = '';
+            passwordModal.style.display = 'none';
+        })
+        // show toast message after 5 seconds 
+        const showToastMessage = (text) => {
+            toastMessage.style.display = 'flex';
+            toastMessageText.innerHTML = text;
+            setTimeout(() => {
+                toastMessage.style.display = 'none';
+            }, 5000);
+        }
+    </script>
+</body>
+
+</html>
